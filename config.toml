@@ -1,0 +1,13 @@
+rewrite_if_exists = true
+# root_dir
+save_dir = "/home/augustus/gdrive/theralode-exp Drafts/EXP_202512_SynthesisU2025G/NMR videos/output"
+# norm_videos_dir
+# runs_to_quantify
+# video_suffixes
+# time_of_interest_sec
+# num_secs_to_process
+# bw_threshold_default
+# px_per_mm
+# magnet_distance_mm
+# frames_per_real_sec
+# default_frames_per_real_sec

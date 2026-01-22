@@ -4,19 +4,19 @@ import pathlib
 
 from matplotlib import pyplot as plt
 
-from nmr_particle_motion.particle_analysis_lib.frame_generator import (
+from nmr_particle_motion.frame_generator import (
     generate_grayscale_frames,
 )
-from nmr_particle_motion.particle_analysis_lib.globals import (
+from nmr_particle_motion.globals import (
     NUM_SECS_TO_PROCESS_IN_VIDEO,
     ROOT_DIR,
     RUNS_TO_QUANTIFY,
 )
-from nmr_particle_motion.particle_analysis_lib.unit_conversions import (
+from nmr_particle_motion.unit_conversions import (
     frame_to_time,
     time_to_frames,
 )
-from nmr_particle_motion.particle_analysis_lib.video_normalizing import (
+from nmr_particle_motion.video_normalizing import (
     VideoNormalizer,
     plot_frame,
 )

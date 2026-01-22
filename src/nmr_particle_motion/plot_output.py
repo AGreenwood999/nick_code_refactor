@@ -4,61 +4,58 @@ Module contains all functions that generate plots.
 
 import pathlib
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.ticker import FuncFormatter
 from tqdm import tqdm
 
-from nmr_particle_motion.particle_analysis_lib.file_names_and_paths import (
+from nmr_particle_motion.config import Config
+from nmr_particle_motion.file_names_and_paths import (
     generate_video_paths,
     get_le_lage_fpath,
     get_normalized_video_fpath,
     get_prenormalized_video_fpath,
-    video_has_mm_scale,
     video_path_to_run_details,
 )
-from nmr_particle_motion.particle_analysis_lib.frame_generator import (
-    generate_grayscale_frames,
-)
-from nmr_particle_motion.particle_analysis_lib.globals import (
-    MAGNET_DISTANCE_TO_MM,
-    NUM_SECS_TO_PROCESS_IN_VIDEO,
-    SAVE_DIR,
-    TIME_OF_INTEREST,
-    ShapeGlobals,
-)
-from nmr_particle_motion.particle_analysis_lib.leading_lagging_edge_and_particle_dist import (
+from nmr_particle_motion.frame_generator import generate_grayscale_frames
+from nmr_particle_motion.leading_lagging_edge_and_particle_dist import (
     get_particle_distribution_from_frame,
 )
-from nmr_particle_motion.particle_analysis_lib.unit_conversions import (
+from nmr_particle_motion.shapeglobals import ShapeGlobals
+from nmr_particle_motion.unit_conversions import (
     frame_to_time,
     get_mm_distance,
     time_to_frames,
 )
-from nmr_particle_motion.particle_analysis_lib.video_normalizing import (
+from nmr_particle_motion.video_normalizing import (
     VideoNormalizer,
     uniform_filter,
 )
 
 
-def get_frame_to_sec_formatter(video_path: pathlib.Path) -> FuncFormatter:
+def get_frame_to_sec_formatter(
+    video_path: pathlib.Path, config: Config, metadata: dict[str, str]
+) -> FuncFormatter:
     """Formatter that converts frame indices to seconds for the given video."""
 
     def frame_to_sec_formatter(x, pos):
-        return f"{int(frame_to_time(video_path, x))}"
+        return f"{int(frame_to_time(video_path, config, metadata, x))}"
 
     return FuncFormatter(frame_to_sec_formatter)
 
 
 def plot_height_over_time(
-    quant_path: pathlib.Path, ax: Axes, title_includes_magnet_distance=True
+    quant_path: pathlib.Path,
+    config: Config,
+    metadata: dict[str, str],
+    ax: Axes,
+    title_includes_magnet_distance=True,
 ):
     """Plot the leading (blue) and lagging (red) edge height in the tube over time."""
-    vd = video_path_to_run_details(quant_path)
-    SG = ShapeGlobals(vd.has_mm_scale)
-    nframes = time_to_frames(quant_path, NUM_SECS_TO_PROCESS_IN_VIDEO)
+    vd = video_path_to_run_details(quant_path, metadata)
+    SG = ShapeGlobals()
+    nframes = time_to_frames(quant_path, config, metadata, config.num_secs_to_process)
     df = pd.read_csv(quant_path)
     ax.plot(
         df["seconds"][:nframes],
@@ -69,24 +66,26 @@ def plot_height_over_time(
     ax.plot(df["seconds"][:nframes], df["lagging_edge_mm"][:nframes], c="red")
     ax.set_xlabel("Time (seconds)")
     ax.set_ylabel("Height (mm)")
-    ax.set_ylim(0, get_mm_distance(SG.FINAL_FRAME_SHAPE[1]))
+    ax.set_ylim(0, get_mm_distance(config, SG.FINAL_FRAME_SHAPE[1]))
     if title_includes_magnet_distance:
         ax.set_title(
             "Particle Height Over Time"
             f"\n{vd.mass} {vd.substance}, "
-            f"Magnet {MAGNET_DISTANCE_TO_MM[vd.distance]}mm away at {vd.rpm}"
+            f"Magnet {config.magnet_distance_mm[vd.distance]}mm away at {vd.rpm}"
         )
     else:
         ax.set_title(f"{vd.mass} {vd.substance}, Magnet at {vd.rpm}")
 
 
 def plot_height_at_time_of_interest_by_distance(
+    path_to_videos: str | pathlib.Path,
+    config: Config,
+    metadata: dict[str, str],
     substance,
     mass,
     rpm,
     ax: Axes,
     time_margin=5,
-    path_to_videos: str | pathlib.Path | None = None,
 ):
     """Plot height at TIME_OF_INTEREST seconds vs. distance from magnet.
 
@@ -101,19 +100,35 @@ def plot_height_at_time_of_interest_by_distance(
     le_heights = []
     lage_heights = []
     SG = None
-    for vpath, vd in generate_video_paths(path_to_videos):
-        SG = ShapeGlobals(video_has_mm_scale(vpath))
+    for vpath, vd, _ in generate_video_paths(path_to_videos, config):
+        SG = ShapeGlobals()
         if vd.substance != substance or vd.mass != mass or vd.rpm != rpm:
             continue
-        quant_path = get_le_lage_fpath(vpath)
+        quant_path = get_le_lage_fpath(vpath, config, metadata)
         df = pd.read_csv(quant_path)
-        frame_without_margin = int(time_to_frames(quant_path, TIME_OF_INTEREST))
+        frame_without_margin = int(
+            time_to_frames(quant_path, config, metadata, config.time_of_interest_sec)
+        )
         frame_range = [
-            int(time_to_frames(quant_path, TIME_OF_INTEREST - time_margin)),
-            int(time_to_frames(quant_path, TIME_OF_INTEREST + time_margin)),
+            int(
+                time_to_frames(
+                    quant_path,
+                    config,
+                    metadata,
+                    config.time_of_interest_sec - time_margin,
+                )
+            ),
+            int(
+                time_to_frames(
+                    quant_path,
+                    config,
+                    metadata,
+                    config.time_of_interest_sec + time_margin,
+                )
+            ),
         ]
-        details = video_path_to_run_details(quant_path)
-        distances.append(MAGNET_DISTANCE_TO_MM[details.distance])
+        details = video_path_to_run_details(quant_path, metadata)
+        distances.append(config.magnet_distance_mm[details.distance])
         if time_margin > 0:
             le_heights.append(
                 df["leading_edge_mm"][frame_range[0] : frame_range[1] + 1].max()
@@ -131,23 +146,30 @@ def plot_height_at_time_of_interest_by_distance(
     ax.plot(distances, le_heights, label="Leading Edge", c="blue", marker="o")
     ax.plot(distances, lage_heights, label="Lagging Edge", c="red", marker="o")
     ax.set_xlabel("Distance from magnet (mm)")
-    ax.set_ylabel(f"Height of leading edge at {TIME_OF_INTEREST}±{time_margin}s (mm)")
+    ax.set_ylabel(
+        f"Height of leading edge at {config.time_of_interest_sec}±{time_margin}s (mm)"
+    )
     time_of_interest_str = (
-        f"{TIME_OF_INTEREST}±{time_margin}"
+        f"{config.time_of_interest_sec}±{time_margin}"
         if time_margin > 0
-        else f"{TIME_OF_INTEREST}"
+        else f"{config.time_of_interest_sec}"
     )
     ax.set_title(
         f"Height at {time_of_interest_str} seconds\n{mass} {substance}, Magnet at {rpm}"
     )
     if SG:
-        ax.set_ylim(0, get_mm_distance(SG.FINAL_FRAME_SHAPE[1]) + 10)
-    ax.set_xticks(sorted(list(MAGNET_DISTANCE_TO_MM.values())))
+        ax.set_ylim(0, get_mm_distance(config, SG.FINAL_FRAME_SHAPE[1]) + 10)
+    ax.set_xticks(sorted(list(config.magnet_distance_mm.values())))
     ax.legend()
 
 
 def plot_distribution(
-    video_path: pathlib.Path, time_sec: int, ax: Axes, time_margin=5
+    video_path: pathlib.Path,
+    config: Config,
+    metadata: dict[str, str],
+    time_sec: int,
+    ax: Axes,
+    time_margin=5,
 ) -> None:
     """Plot the particle distribution at the given time in seconds.
     Width is normalized to 100% from lagging to leading edge.
@@ -156,19 +178,17 @@ def plot_distribution(
     to take the non-empty distribution closest to the middle of the window.
     """
     xxs, ys = [], []
-    norm_video_path = get_normalized_video_fpath(video_path)
+    norm_video_path = get_normalized_video_fpath(video_path, config, metadata)
     assert norm_video_path.exists(), (
         f"Normalized video {norm_video_path} does not exist."
     )
     for i, normalized_frame in generate_grayscale_frames(norm_video_path):
-        t = frame_to_time(video_path, i)
+        t = frame_to_time(video_path, config, metadata, i)
         if t < (time_sec - time_margin):
             continue
         if t > (time_sec + time_margin):
             break
-        xx, y, _lage, _le = get_particle_distribution_from_frame(
-            normalized_frame, video_has_mm_scale(video_path)
-        )
+        xx, y, _, _ = get_particle_distribution_from_frame(normalized_frame)
         if xx.size == 0 or y.size == 0:
             continue
         xxs.append(xx)
@@ -177,67 +197,75 @@ def plot_distribution(
         i = int(len(xxs) / 2)
         xx, y = xxs[i], ys[i]
         ax.plot(xx, y, label="Particle Density")
-        vd = video_path_to_run_details(video_path)
+        vd = video_path_to_run_details(video_path, metadata)
         time_of_interest_str = (
-            f"{TIME_OF_INTEREST}±{time_margin}"
+            f"{config.time_of_interest_sec}±{time_margin}"
             if time_margin > 0
-            else f"{TIME_OF_INTEREST}"
+            else f"{config.time_of_interest_sec}"
         )
         ax.set_title(
             f"Particle Distribution at {time_of_interest_str} seconds"
-            f"\n{vd.mass} {vd.substance}, Magnet {MAGNET_DISTANCE_TO_MM[vd.distance]}mm away at {vd.rpm}"
+            f"\n{vd.mass} {vd.substance}, Magnet {config.magnet_distance_mm[vd.distance]}mm away at {vd.rpm}"
         )
         ax.set_xlabel("Position from lagging to leading edge (%)")
         ax.set_ylabel("Particle Density")
     return
 
 
-def plot_distribution_by_time(video_path: pathlib.Path, ax: Axes):
+def plot_distribution_by_time(
+    video_path: pathlib.Path, config: Config, metadata: dict[str, str], ax: Axes
+):
     """Creates an image where each column
     shows the particle distribution within the tube at that time.
     """
-    SG = ShapeGlobals(video_has_mm_scale(video_path))
-    nframes = time_to_frames(video_path, NUM_SECS_TO_PROCESS_IN_VIDEO)
+    SG = ShapeGlobals()
+    nframes = time_to_frames(video_path, config, metadata, config.num_secs_to_process)
     distributions = np.zeros((SG.FINAL_FRAME_SHAPE[1], nframes), dtype=np.float32)
     counts = np.zeros((SG.FINAL_FRAME_SHAPE[1], nframes), dtype=np.int32)
-    norm_video_path = get_normalized_video_fpath(video_path)
+    norm_video_path = get_normalized_video_fpath(video_path, config, metadata)
     for i, normalized_frame in generate_grayscale_frames(norm_video_path):
         if i >= nframes:
             break
         xx, y, lage, le = get_particle_distribution_from_frame(
-            normalized_frame, SG.has_mm_scale, xx_as_percents=False
+            normalized_frame, xx_as_percents=False
         )
         if xx.size == 0 or y.size == 0:
             continue
         counts[:, i] = normalized_frame.sum(axis=0)
         distributions[lage:le, i] = 255 * y / y.max()
     ax.imshow(distributions, aspect="equal", cmap="gray")
-    vd = video_path_to_run_details(video_path)
+    vd = video_path_to_run_details(video_path, metadata)
     ax.set_title(
         f"Particle Distribution"
         f"\n{vd.mass} {vd.substance}, Magnet "
-        f"{MAGNET_DISTANCE_TO_MM[vd.distance]}mm away at {vd.rpm}"
+        f"{config.magnet_distance_mm[vd.distance]}mm away at {vd.rpm}"
     )
     ax.set_xlabel("Time (seconds)")
-    ax.set_xticks(np.arange(0, nframes, time_to_frames(video_path, 60)))
-    ax.xaxis.set_major_formatter(get_frame_to_sec_formatter(video_path))
+    ax.set_xticks(
+        np.arange(0, nframes, time_to_frames(video_path, config, metadata, 60))
+    )
+    ax.xaxis.set_major_formatter(
+        get_frame_to_sec_formatter(video_path, config, metadata)
+    )
     ax.set_ylabel("Height (mm)")
     ax.set_yticks(
         [0, distributions.shape[0]],
-        ["0", f"{int(get_mm_distance(distributions.shape[0]))}"],
+        ["0", f"{int(get_mm_distance(config, distributions.shape[0]))}"],
     )
     ax.invert_yaxis()
     return distributions
 
 
-def plot_video_as_image(video_path: pathlib.Path, ax: Axes):
+def plot_video_as_image(
+    video_path: pathlib.Path, config: Config, metadata: dict[str, str], ax: Axes
+):
     """Creates an image where each column
     shows the particle distribution within the tube at that time.
     """
-    video_path = get_prenormalized_video_fpath(video_path)
-    SG = ShapeGlobals(video_has_mm_scale(video_path))
-    normalizer = VideoNormalizer(video_path)
-    nframes = time_to_frames(video_path, NUM_SECS_TO_PROCESS_IN_VIDEO)
+    video_path = get_prenormalized_video_fpath(video_path, metadata)
+    SG = ShapeGlobals()
+    normalizer = VideoNormalizer(video_path, config, metadata)
+    nframes = time_to_frames(video_path, config, metadata, config.num_secs_to_process)
     img = np.zeros((SG.FINAL_FRAME_SHAPE[1], nframes), dtype=np.uint8)
     for i, frame in tqdm(generate_grayscale_frames(video_path), total=nframes):
         if i == 0:
@@ -249,16 +277,22 @@ def plot_video_as_image(video_path: pathlib.Path, ax: Axes):
         scaled = normalizer.scale_brightness(blurred)
         img[:, i] = scaled.mean(axis=0, dtype=np.uint8)
     ax.imshow(img, aspect="equal", cmap="gray")
-    vd = video_path_to_run_details(video_path)
+    vd = video_path_to_run_details(video_path, metadata)
     ax.set_title(
         f"Frame Averages Over Time"
         f"\n{vd.mass} {vd.substance}, Magnet "
-        f"{MAGNET_DISTANCE_TO_MM[vd.distance]}mm away at {vd.rpm}"
+        f"{config.magnet_distance_mm[vd.distance]}mm away at {vd.rpm}"
     )
     ax.set_xlabel("Time (seconds)")
-    ax.set_xticks(np.arange(0, nframes, time_to_frames(video_path, 60)))
-    ax.xaxis.set_major_formatter(get_frame_to_sec_formatter(video_path))
+    ax.set_xticks(
+        np.arange(0, nframes, time_to_frames(video_path, config, metadata, 60))
+    )
+    ax.xaxis.set_major_formatter(
+        get_frame_to_sec_formatter(video_path, config, metadata)
+    )
     ax.set_ylabel("Height (mm)")
-    ax.set_yticks([0, img.shape[0]], ["0", f"{int(get_mm_distance(img.shape[0]))}"])
+    ax.set_yticks(
+        [0, img.shape[0]], ["0", f"{int(get_mm_distance(config, img.shape[0]))}"]
+    )
     ax.invert_yaxis()
     return img

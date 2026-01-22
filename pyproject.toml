@@ -2,9 +2,7 @@
 name = "nmr-particle-motion"
 version = "0.1.0"
 description = ""
-authors = [
-    {name = "Augustus Greenwood",email = "abg@unandup.com"}
-]
+authors = [{ name = "Augustus Greenwood", email = "abg@unandup.com" }]
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -12,11 +10,18 @@ dependencies = [
     "scipy (>=1.17.0,<2.0.0)",
     "pandas (>=2.3.3,<3.0.0)",
     "opencv-python (>=4.13.0.90,<5.0.0.0)",
-    "tqdm (>=4.67.1,<5.0.0)"
+    "tqdm (>=4.67.1,<5.0.0)",
+    "typer (>=0.21.1,<0.22.0)",
+    "numpy (>=2.4.1,<3.0.0)",
+    "pyqt6 (>=6.10.2,<7.0.0)",
+    "polars (>=1.37.1,<2.0.0)",
 ]
 
 [tool.poetry]
-packages = [{include = "nmr_particle_motion", from = "src"}]
+packages = [{ include = "nmr_particle_motion", from = "src" }]
+
+[project.scripts]
+main = 'nmr_particle_motion.cli:APP'
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

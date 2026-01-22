@@ -1,3 +1,4 @@
+import logging
 import pathlib
 
 import cv2
@@ -6,24 +7,19 @@ from matplotlib import pyplot as plt
 from scipy.ndimage import uniform_filter
 from tqdm import tqdm
 
-from nmr_particle_motion.particle_analysis_lib.file_names_and_paths import (
+from nmr_particle_motion.config import Config
+from nmr_particle_motion.file_names_and_paths import (
     get_normalized_video_fpath,
     get_prenormalized_video_fpath,
-    video_has_mm_scale,
-    video_path_to_run_details,
 )
-from nmr_particle_motion.particle_analysis_lib.frame_generator import (
+from nmr_particle_motion.frame_generator import (
     VideoData,
     generate_grayscale_frames,
 )
-from nmr_particle_motion.particle_analysis_lib.globals import (
-    BW_THRESHOLD,
-    EMPTY_TUBE_WITH_MM_SCALE_VIDEO_PATH,
-    EMPTY_TUBE_WITHOUT_MM_SCALE_VIDEO_PATH,
-    REWRITE_IF_EXISTS,
-    ShapeGlobals,
-)
-from nmr_particle_motion.particle_analysis_lib.video_writer import VideoWriter
+from nmr_particle_motion.shapeglobals import ShapeGlobals
+from nmr_particle_motion.video_writer import VideoWriter
+
+logger = logging.getLogger("nmr_particle_motion")
 
 
 def align_images_phase_correlation(reference_image, image_to_align):
@@ -64,32 +60,21 @@ def plot_frame(frame: np.ndarray, title: str = "Frame", ax=None):
 class VideoNormalizer:
     """Class to normalize video frames."""
 
-    null_frame_with_mm_scale: np.ndarray | None = None
-    null_frame_without_mm_scale: np.ndarray | None = None
+    null_frame: np.ndarray | None = None
 
-    def __init__(self, vpath: pathlib.Path):
-        self.video_path = get_prenormalized_video_fpath(
-            vpath
-        )  # Just to assert it's a pre-normalized video.
-        self.SG = ShapeGlobals(video_has_mm_scale(vpath))
-        if (
-            VideoNormalizer.null_frame_with_mm_scale is None
-            or VideoNormalizer.null_frame_without_mm_scale is None
-        ):
-            VideoNormalizer.null_frame_with_mm_scale = self.get_null_frame(
-                has_mm_scale=True
-            )
-            VideoNormalizer.null_frame_without_mm_scale = self.get_null_frame(
-                has_mm_scale=False
-            )
-        self.has_mm_scale = video_path_to_run_details(vpath).has_mm_scale
-        self.null_frame = (
-            VideoNormalizer.null_frame_with_mm_scale
-            if self.has_mm_scale
-            else VideoNormalizer.null_frame_without_mm_scale
-        )
+    def __init__(self, vpath: pathlib.Path, config: Config, metadata: dict[str, str]):
+        # Just to assert it's a pre-normalized video.
+        self.video_path = get_prenormalized_video_fpath(vpath, metadata)
+
+        self.SG = ShapeGlobals()
+
+        if VideoNormalizer.null_frame is None:
+            VideoNormalizer.null_frame = self.get_null_frame(config)
+
+        self.null_frame = VideoNormalizer.null_frame
+
         self.cropped_null_frame = self.crop_frame_to_tube(self.null_frame)
-        self.bw_threshold = BW_THRESHOLD
+        self.bw_threshold = config.bw_threshold_default
         self.binarization_margin = 0
         self.brightness_scale_factor = 1.0
 
@@ -147,13 +132,9 @@ class VideoNormalizer:
         plot_frame(self.crop_to_tube_rectangle(frame, was_straightened, margin=margin))
 
     @staticmethod
-    def get_null_frame(has_mm_scale: bool) -> np.ndarray:
+    def get_null_frame(config: Config) -> np.ndarray:
         """Get the null frame (empty tube) for normalization."""
-        null_vpath = (
-            EMPTY_TUBE_WITH_MM_SCALE_VIDEO_PATH
-            if has_mm_scale
-            else EMPTY_TUBE_WITHOUT_MM_SCALE_VIDEO_PATH
-        )
+        null_vpath = config.empty_tube_video_path
         vd = VideoData.from_path(null_vpath)
         vd.video.release()  # Release immediately since we only need metadata here.
         frames_to_capture = np.linspace(
@@ -163,6 +144,7 @@ class VideoNormalizer:
         for i, frame in generate_grayscale_frames(null_vpath):
             if i in frames_to_capture:
                 frames.append(frame)
+
         return np.median(np.stack(frames, axis=0), axis=0).astype(np.uint8)
 
     def subtract_null_frame(self, A: np.ndarray) -> np.ndarray:
@@ -192,7 +174,9 @@ class VideoNormalizer:
         """
         margin = (50, 50, 50, 50)
         r0 = self.crop_to_tube_rectangle(
-            self.null_frame, was_straightened=False, margin=margin
+            self.null_frame,  # type:ignore
+            was_straightened=False,
+            margin=margin,
         )
         r1 = self.crop_to_tube_rectangle(frame, was_straightened=False, margin=margin)
         shift_x, shift_y = align_images_phase_correlation(r0, r1)
@@ -233,7 +217,7 @@ class VideoNormalizer:
         """Normalize the frame by subtracting the null frame and aligning it.
         This prepares the frame for further analysis.
         """
-        if frame.shape != self.null_frame.shape:
+        if frame.shape != self.null_frame.shape:  # type:ignore
             # For now, assume size mismatch is an error. Otherwise, resize.
             # frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_CUBIC)
             raise ValueError("Frame shape does not match null frame shape.")
@@ -246,7 +230,9 @@ class VideoNormalizer:
         # thresholded_frame = (scaled < (self.cropped_null_frame.astype(np.float32)-self.binarization_margin)) * 255 # This method makes strange-looking videos. The cloud is a bunch of evenly-spaced dots.
         return thresholded_frame
 
-    def tune_binarization_parameters(self, frame: np.ndarray, show=False) -> float:
+    def tune_binarization_parameters(
+        self, frame: np.ndarray, config: Config, show=False
+    ) -> float:
         """Tunes brightness scale factor and binarization margin using the provided frame."""
         fig = None
         axs = None
@@ -267,7 +253,7 @@ class VideoNormalizer:
             )
         conservative_quant_mask = self.SG.CONSERVATIVE_QUANT_MASK.copy()
         self.binarization_margin = 0
-        self.bw_threshold = BW_THRESHOLD
+        self.bw_threshold = config.bw_threshold_default
         f = self.normalize_frame(frame.copy())
         while (
             f[conservative_quant_mask].sum() != 0
@@ -289,11 +275,11 @@ class VideoNormalizer:
         print(f"Tuned BW threshold to {self.binarization_margin}")
         return self.binarization_margin
 
-    def normalize_video(self) -> None:
+    def normalize_video(self, config: Config, metadata: dict[str, str]) -> None:
         """Perform the quantification of bead mixing in the video."""
-        norm_video_path = get_normalized_video_fpath(self.video_path)
-        if norm_video_path.exists() and not REWRITE_IF_EXISTS:
-            print(
+        norm_video_path = get_normalized_video_fpath(self.video_path, config, metadata)
+        if norm_video_path.exists() and not config.rewrite_if_exists:
+            logger.info(
                 f"Normalized video {norm_video_path} already exists. Skipping normalization."
             )
             return

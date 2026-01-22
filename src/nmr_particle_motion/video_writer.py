@@ -2,6 +2,9 @@ import pathlib
 import subprocess
 
 import numpy as np
+import logging
+
+logger = logging.getLogger("nmr_particle_motion")
 
 
 class VideoWriter:
@@ -54,7 +57,7 @@ class VideoWriter:
         if not self.can_write:
             print("Video exists and overwrite is set to False. Not saving video.")
             return
-        print("saving video...")
+        logger.info(f"Saving video to {self.outpath}...")
         # Start ffmpeg subprocess
         ffmpeg_cmd = [
             "ffmpeg",
@@ -111,5 +114,5 @@ class VideoWriter:
         ):
             self.process.stdin.close()
             self.process.wait()
-            print(f"Video saved as {self.outpath}")
+            logger.info(f"Video saved as {self.outpath}")
         return self.can_write
