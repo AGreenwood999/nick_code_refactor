@@ -249,9 +249,6 @@ def main(
             help="Path to TOML config containing default options and configuration for project"
         ),
     ] = pathlib.Path(__file__).parent.parent.parent / "config.toml",
-    metadata_path: Annotated[
-        pathlib.Path, typer.Argument(help="Path to json metadata cache")
-    ] = pathlib.Path(__file__).parent.parent.parent / "video_metadata.json",
     compare: Annotated[
         bool,
         typer.Option(

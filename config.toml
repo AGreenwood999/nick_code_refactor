@@ -1,9 +1,7 @@
-# rewrite_vids = false
+rewrite_vids = true
 # root_dir
-save_dir = "/home/augustus/Documents/nmr_particle_motion/data/testing/output"
 # overwrite_lead_lag_edge_data = true
 # overwrite_plots = true
-#save_dir = "/home/augustus/gdrive/theralode-exp Drafts/EXP_202512_SynthesisU2025G/NMR videos/output"
 # norm_videos_dir
 # runs_to_quantify
 # video_suffixes
