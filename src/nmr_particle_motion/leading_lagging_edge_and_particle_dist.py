@@ -6,13 +6,14 @@ by finding the rightmost and leftmost white pixels in binary (black-and-white) f
 import pathlib
 from typing import Callable
 
+import cv2
 import numpy as np
 from scipy.stats import gaussian_kde
 
 from nmr_particle_motion.config import Config
 from nmr_particle_motion.file_names_and_paths import (
+    VideoContext,
     get_le_lage_fpath,
-    get_normalized_video_fpath,
 )
 from nmr_particle_motion.frame_generator import (
     generate_grayscale_frames,
@@ -30,18 +31,17 @@ logger = logging.getLogger("nmr_particle_motion")
 def _write_lagging_leading_edges(
     fpath: pathlib.Path,
     config: Config,
-    metadata: dict[str, str],
     lage: list[int],
     le: list[int],
 ) -> None:
     """Write the lagging and leading edge results to a CSV file."""
-    with open(fpath, "wt", encoding="utf-8") as ofh:
-        ofh.write(
+    with open(fpath, "wt", encoding="utf-8") as fid:
+        fid.write(
             "frame_index,seconds,lagging_edge_px,leading_edge_px,lagging_edge_mm,leading_edge_mm\n"
         )
         for i, (_lage, _le) in enumerate(zip(lage, le)):
-            ofh.write(
-                f"{i},{frame_to_time(fpath, config, metadata, i)},{_lage},{_le},{get_mm_distance(config, _lage)},{get_mm_distance(config, _le)}\n"
+            fid.write(
+                f"{i},{frame_to_time(i, config)},{_lage},{_le},{get_mm_distance(_lage, config)},{get_mm_distance(_le, config)}\n"
             )
 
 
@@ -67,7 +67,7 @@ def _quantify_with_leading_lagging_edges(
 
 
 def get_particle_distribution_from_frame(
-    normalized_frame: np.ndarray, xx_as_percents=True
+    normalized_frame: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, int, int]:
     """Get the particle distribution from a single normalized frame.
     This method uses a kernel density estimate (KDE) to smooth the particle count distribution.
@@ -87,47 +87,39 @@ def get_particle_distribution_from_frame(
     counts = counts[lage:le]
     if len(counts) == 0 or counts.sum() == 0:
         return xx, y, lage, le
-    if counts.sum() < 10:
-        xx = np.arange(len(counts))
-        if xx_as_percents:
-            xx = xx * 100 / len(counts)
-        y = counts
-        return xx, y, lage, le
-    positions = np.arange(len(counts))
+
     if len(counts) > 1:
+        positions = np.arange(len(counts))
         samples = np.repeat(positions, counts)
         # expand counts into sample positions
-        kde: Callable = gaussian_kde(samples)
+        kde: Callable = gaussian_kde(samples)  # pyright: ignore[]
     else:
-        kde = lambda x: np.full(x.shape, counts[0])
-    if xx_as_percents:
-        x = np.linspace(positions.min(), positions.max(), 400)
-        y = kde(x)
-        xx = x * 100 / len(counts)
-    else:
-        xx = np.arange(len(counts))
-        y = kde(xx)
+
+        def kde(x):
+            return np.full(x.shape, counts[0])
+
+    xx = np.arange(len(counts))
+    y = kde(xx)
     return xx, y, lage, le
 
 
-def quantify_normalized_video(
-    video_path: pathlib.Path, config: Config, metadata: dict[str, str]
-) -> None:
+def quantify_normalized_video(ctx: VideoContext, config: Config) -> None:
     """Quantify an already normalized video."""
-    SG = ShapeGlobals()
-    norm_video_path = get_normalized_video_fpath(video_path, config, metadata)
-    if not norm_video_path.exists():
-        raise RuntimeError(f"Normalized video {norm_video_path} does not exist.")
-    fpath = get_le_lage_fpath(video_path, config, metadata)
-    if fpath.exists() and not config.rewrite_if_exists:
+    if not ctx.norm_path.exists():
+        raise RuntimeError(f"Normalized video {ctx.norm_path} does not exist.")
+
+    fpath = get_le_lage_fpath(ctx, config)
+    if fpath.exists() and not config.overwrite_lead_lag_edge_data:
         logger.info(
             f"Quantification file {fpath} already exists. Skipping quantification."
         )
         return
+
+    SG = ShapeGlobals()
     lage, le = [], []
-    for _, normalized_frame in generate_grayscale_frames(norm_video_path):
+    for normalized_frame in generate_grayscale_frames(ctx.norm_path):
         normalized_frame[~SG.QUANT_MASK] = 0
         _quant, _lage, _le = _quantify_with_leading_lagging_edges(normalized_frame)
         lage.append(_lage)
         le.append(_le)
-    _write_lagging_leading_edges(fpath, config, metadata, lage, le)
+    _write_lagging_leading_edges(fpath, config, lage, le)

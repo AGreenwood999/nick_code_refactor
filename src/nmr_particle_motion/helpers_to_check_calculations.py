@@ -7,10 +7,8 @@ from matplotlib import pyplot as plt
 from nmr_particle_motion.frame_generator import (
     generate_grayscale_frames,
 )
-from nmr_particle_motion.globals import (
+from nmr_particle_motion.shapeglobals import (
     NUM_SECS_TO_PROCESS_IN_VIDEO,
-    ROOT_DIR,
-    RUNS_TO_QUANTIFY,
 )
 from nmr_particle_motion.unit_conversions import (
     frame_to_time,

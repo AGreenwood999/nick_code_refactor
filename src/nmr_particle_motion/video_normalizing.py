@@ -9,8 +9,7 @@ from tqdm import tqdm
 
 from nmr_particle_motion.config import Config
 from nmr_particle_motion.file_names_and_paths import (
-    get_normalized_video_fpath,
-    get_prenormalized_video_fpath,
+    VideoContext,
 )
 from nmr_particle_motion.frame_generator import (
     VideoData,
@@ -62,9 +61,10 @@ class VideoNormalizer:
 
     null_frame: np.ndarray | None = None
 
-    def __init__(self, vpath: pathlib.Path, config: Config, metadata: dict[str, str]):
+    def __init__(self, ctx: VideoContext, config: Config):
         # Just to assert it's a pre-normalized video.
-        self.video_path = get_prenormalized_video_fpath(vpath, metadata)
+        self.video_path = ctx.path
+        self.norm_path = ctx.norm_path
 
         self.SG = ShapeGlobals()
 
@@ -141,7 +141,7 @@ class VideoNormalizer:
             0, vd.nframes - 1, num=min(50, vd.nframes), dtype=int
         )
         frames = []
-        for i, frame in generate_grayscale_frames(null_vpath):
+        for i, frame in enumerate(generate_grayscale_frames(null_vpath)):
             if i in frames_to_capture:
                 frames.append(frame)
 
@@ -275,24 +275,23 @@ class VideoNormalizer:
         print(f"Tuned BW threshold to {self.binarization_margin}")
         return self.binarization_margin
 
-    def normalize_video(self, config: Config, metadata: dict[str, str]) -> None:
+    def normalize_video(self, config: Config) -> None:
         """Perform the quantification of bead mixing in the video."""
-        norm_video_path = get_normalized_video_fpath(self.video_path, config, metadata)
-        if norm_video_path.exists() and not config.rewrite_if_exists:
+        if self.norm_path.exists() and not config.overwrite_norm_vid:
             logger.info(
-                f"Normalized video {norm_video_path} already exists. Skipping normalization."
+                f"Normalized video {self.norm_path} already exists. Skipping normalization."
             )
             return
         is_first = True
         with VideoWriter(
-            outpath=norm_video_path,
+            outpath=self.norm_path,
             fps=30,
             width=self.SG.FINAL_FRAME_SHAPE[1],
             height=self.SG.FINAL_FRAME_SHAPE[0],
             overwrite=True,
             save_all_data=True,
         ) as video_writer:
-            for _, frame in tqdm(generate_grayscale_frames(self.video_path)):
+            for frame in tqdm(generate_grayscale_frames(self.video_path)):
                 if is_first:
                     self.tune_brightness_scale_factor(frame)
                     # self.tune_binarization_parameters(frame)

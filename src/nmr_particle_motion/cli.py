@@ -1,9 +1,5 @@
 """Quantify bead mixing in a video."""
 
-from dataclasses import dataclass, field
-
-
-import json
 import logging
 import pathlib
 from typing import Annotated
@@ -12,21 +8,16 @@ import numpy as np
 import pandas as pd
 import typer
 from matplotlib import pyplot as plt
-from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
 
 from nmr_particle_motion.config import Config
 from nmr_particle_motion.file_names_and_paths import (
-    RunDetails,
-    generate_video_paths,
+    VideoContext,
     get_all_video_contexts_from_directory,
-    get_coated_vs_uncoated_plot_path,
     get_dist_at_time_plot_fpath,
     get_full_video_distributions_fpaths,
-    get_height_by_dist_at_time_fpath,
     get_height_over_time_fpath,
     get_le_lage_fpath,
-    video_path_to_run_details,
 )
 from nmr_particle_motion.leading_lagging_edge_and_particle_dist import (
     quantify_normalized_video,
@@ -34,21 +25,11 @@ from nmr_particle_motion.leading_lagging_edge_and_particle_dist import (
 from nmr_particle_motion.plot_output import (
     plot_distribution,
     plot_distribution_by_time,
-    plot_height_at_time_of_interest_by_distance,
     plot_height_over_time,
-    plot_video_as_image,
 )
 from nmr_particle_motion.video_normalizing import VideoNormalizer
 
 logger = logging.getLogger("nmr_particle_motion")
-
-
-def get_substance_mass_rpm_combos(path_to_videos: str | pathlib.Path, config: Config):
-    substance_mass_rpm_combos = set()
-    for _, vdesc, _ in generate_video_paths(path_to_videos, config):
-        substance_mass_rpm_combos.add((vdesc.substance, vdesc.mass, vdesc.rpm))
-
-    return substance_mass_rpm_combos
 
 
 def maximize_figure() -> None:
@@ -59,23 +40,23 @@ def maximize_figure() -> None:
 
 
 def save_distribution_plot(
-    video_path: pathlib.Path,
+    ctx: VideoContext,
     config: Config,
-    metadata: dict[str, str],
     time_sec: int,
     show: bool,
 ) -> None:
     """Plot the distribution of particles at a given time.
     This method visualizes the quantification results.
     """
-    plot_fpath = get_dist_at_time_plot_fpath(video_path, config, metadata, time_sec)
-    if plot_fpath.exists() and not config.rewrite_if_exists:
+    plot_fpath = get_dist_at_time_plot_fpath(ctx, config, time_sec)
+    if plot_fpath.exists() and not config.overwrite_plots:
         logger.info(
             f"Distribution file {plot_fpath} already exists. Skipping distribution plotting."
         )
         return
     fig, ax = plt.subplots()
-    plot_distribution(video_path, config, metadata, time_sec, ax)
+    plot_distribution(ctx, config, time_sec, ax)
+    ax.grid(visible=True, which="both", axis="both", color="r", linewidth=2)
     fig.tight_layout()
     plt.savefig(plot_fpath)
     if show:
@@ -84,21 +65,20 @@ def save_distribution_plot(
 
 
 def save_distribution_by_time_plot(
-    video_path: pathlib.Path, config: Config, metadata: dict[str, str], show: bool
+    ctx: VideoContext, config: Config, show: bool
 ) -> None:
     """Plot the distribution of particles at a given time.
     This method visualizes the quantification results.
     """
-    fpath, plot_fpath = get_full_video_distributions_fpaths(
-        video_path, config, metadata
-    )
-    if fpath.exists() and plot_fpath.exists() and not config.rewrite_if_exists:
+    fpath, plot_fpath = get_full_video_distributions_fpaths(ctx, config)
+    if fpath.exists() and plot_fpath.exists() and not config.overwrite_plots:
         logger.info(
             f"Distribution file {fpath} already exists. Skipping distribution plotting."
         )
         return
     fig, ax = plt.subplots()
-    distributions = plot_distribution_by_time(video_path, config, metadata, ax)
+    distributions = plot_distribution_by_time(ctx, config, ax)
+    ax.grid(visible=True, which="both", axis="both", color="r", linewidth=2)
     fig.tight_layout()
     plt.savefig(plot_fpath)
     if show:
@@ -110,59 +90,45 @@ def save_distribution_by_time_plot(
         )
 
 
-def normalize_videos(
-    path_to_videos: str | pathlib.Path,
-    config: Config,
-    metadata: dict[str, str],
-) -> None:
-    for vpath, vdesc, _ in generate_video_paths(path_to_videos, config):
-        logger.info(f"Normalizing video at time {vdesc.datestamp}")
-        VideoNormalizer(vpath, config, metadata).normalize_video(config, metadata)
+def normalize_video(ctx: VideoContext, config: Config):
+    VideoNormalizer(ctx, config).normalize_video(config)
 
 
-def quantify_normalized_videos(
-    path_to_videos: str | pathlib.Path, config: Config, metadata: dict[str, str]
-) -> None:
-    for vpath, vdesc, _ in tqdm(generate_video_paths(path_to_videos, config)):
-        logging.info(f"Quantifying run at time {vdesc.datestamp}")
-        quantify_normalized_video(vpath, config, metadata)
+def quantify_normalized_videos(contexts: list[VideoContext], config: Config) -> None:
+    for ctx in tqdm(contexts):
+        logging.info(f"Quantifying run {ctx.path.stem}")
+        quantify_normalized_video(ctx, config)
         save_distribution_plot(
-            vpath, config, metadata, time_sec=config.time_of_interest_sec, show=False
+            ctx, config, time_sec=config.time_of_interest_sec, show=False
         )
-        save_distribution_by_time_plot(vpath, config, metadata, show=False)
+        save_distribution_by_time_plot(ctx, config, show=False)
 
 
-def plot_height_over_time_all_videos(
-    path_to_videos: str | pathlib.Path, config: Config, metadata: dict[str, str]
-):
-    for vpath, _, _ in generate_video_paths(path_to_videos, config):
-        quant_path = get_le_lage_fpath(vpath, config, metadata)
+def plot_height_over_time_all_videos(contexts: list[VideoContext], config: Config):
+    for ctx in contexts:
+        quant_path = get_le_lage_fpath(ctx, config)
         fig, ax = plt.subplots()
-        plot_height_over_time(quant_path, config, metadata, ax)
+        plot_height_over_time(quant_path, ctx, config, ax)
+        ax.grid(visible=True, which="both", axis="both", color="r", linewidth=2)
         ax.legend()
         fig.tight_layout()
-        plt.savefig(
-            get_height_over_time_fpath(vpath, config, metadata).with_suffix(".png")
-        )
+        plt.savefig(get_height_over_time_fpath(ctx, config).with_suffix(".png"))
         plt.close(fig)
 
 
-def plot_all_height_over_time_all_videos(
-    path_to_videos: str | pathlib.Path, config: Config, metadata: dict[str, str]
-):
-    smrs = sorted(list(get_substance_mass_rpm_combos(path_to_videos, config)))
-    fig, axs = plt.subplots(int(np.ceil(len(smrs) / 3)), 3, sharex=True, sharey=True)
+def plot_all_height_over_time_all_videos(contexts: list[VideoContext], config: Config):
+    fig, axs = plt.subplots(
+        int(np.ceil(len(contexts) / 3)), 3, sharex=True, sharey=True
+    )
     axs = axs.flatten()
-    for vpath, vd, _ in generate_video_paths(path_to_videos, config):
-        quant_path = get_le_lage_fpath(vpath, config, metadata)
-        i = smrs.index((vd.substance, vd.mass, vd.rpm))
-        plot_height_over_time(
-            quant_path, config, metadata, axs[i], title_includes_magnet_distance=False
-        )
+    for i, ctx in enumerate(contexts):
+        axs[i].grid(visible=True, which="both", axis="both", color="r", linewidth=2)
+        quant_path = get_le_lage_fpath(ctx, config)
+        plot_height_over_time(quant_path, ctx, config, axs[i])
     fig.suptitle("Particle Height Over Time")
     maximize_figure()
     fig.tight_layout()
-    grandparent = get_height_over_time_fpath(vpath, config, metadata).parent.parent  # type:ignore
+    grandparent = get_height_over_time_fpath(ctx, config).parent.parent  # type:ignore
     figpath = grandparent / "all_height_over_time.png"
     if figpath.exists():
         logging.warning(f"{figpath} will be overwritten.")
@@ -170,43 +136,14 @@ def plot_all_height_over_time_all_videos(
     plt.close(fig)
 
 
-def plot_height_at_time_of_interest_by_distance_all_videos(
-    path_to_videos: str | pathlib.Path, config: Config, metadata: dict[str, str]
-):
-    """Plot height at TIME_OF_INTEREST seconds vs. distance from magnet.
-    0 time_margin means exact time only. Non-zero margin instructs to take max in that window,
-    which is useful because there is jitter in the measurement
-    (sometimes particles seem to disappear for a second).
-    """
-    substance_mass_rpm_combos = get_substance_mass_rpm_combos(path_to_videos, config)
-    for smr in substance_mass_rpm_combos:
-        fig, ax = plt.subplots()
-        plot_height_at_time_of_interest_by_distance(
-            path_to_videos, config, metadata, smr[0], smr[1], smr[2], ax
-        )
-        fig.tight_layout()
-        plt.savefig(
-            get_height_by_dist_at_time_fpath(
-                config, smr[0], smr[1], smr[2], config.time_of_interest_sec
-            )
-        )
-        plt.close(fig)
+def plot_all_side_by_side_coated_vs_uncoated(*args):
+    pass
 
 
+"""
 def plot_all_side_by_side_coated_vs_uncoated(
-    path_to_videos: str | pathlib.Path, config: Config, metadata: dict[str, str]
+    contexts: list[VideoContext], config: Config
 ):
-    def generate_matches(substance, mass, rpm, distance=None):
-        for vpath, vd, _ in generate_video_paths(path_to_videos, config):
-            if (
-                substance == substance
-                and vd.mass == mass
-                and vd.rpm == rpm
-                and (vd.distance == distance or distance is None)
-            ):
-                yield vpath
-
-    smrs = get_substance_mass_rpm_combos(path_to_videos, config)
     uncoated_smrs = [smr for smr in smrs if not smr[0].lower().startswith("si")]
     for substance, mass, rpm in uncoated_smrs:
         uncoated_vpaths = list(generate_matches(substance, mass, rpm))
@@ -216,7 +153,7 @@ def plot_all_side_by_side_coated_vs_uncoated(
                 " They will all compare against the same coated video."
             )
         for uncoated_vpath in uncoated_vpaths:
-            vd = video_path_to_run_details(uncoated_vpath, metadata)
+            vd = get_run_details_from_path_csv(uncoated_vpath, metadata)
             coated_sub = f"Si{substance}"
             coated_vpaths = list(generate_matches(coated_sub, mass, rpm, vd.distance))
             if not coated_vpaths:
@@ -295,7 +232,7 @@ def plot_all_side_by_side_coated_vs_uncoated(
                 )
             )
             plt.close(fig)
-
+"""
 
 APP = typer.Typer()
 
@@ -355,22 +292,15 @@ def main(
 
     contexts = get_all_video_contexts_from_directory(videos_path, config)
 
-    # Write metadata
-    metadata = {}
-    for _, _, ind_metadata in generate_video_paths(videos_path, config):
-        metadata |= ind_metadata
+    for ctx in contexts:
+        normalize_video(ctx, config)
 
-    metadata_path.write_text(json.dumps(metadata, indent=4))
+    quantify_normalized_videos(contexts, config)
+    plot_height_over_time_all_videos(contexts, config)
+    plot_all_height_over_time_all_videos(contexts, config)
 
-    normalize_videos(videos_path, config, metadata)
-    quantify_normalized_videos(videos_path, config, metadata)
-    plot_height_over_time_all_videos(videos_path, config, metadata)
-    plot_all_height_over_time_all_videos(videos_path, config, metadata)
-    plot_height_at_time_of_interest_by_distance_all_videos(
-        videos_path, config, metadata
-    )
     if compare:
-        plot_all_side_by_side_coated_vs_uncoated(videos_path, config, metadata)
+        plot_all_side_by_side_coated_vs_uncoated(contexts, config)
 
 
 if __name__ == "__main__":

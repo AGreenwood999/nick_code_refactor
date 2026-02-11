@@ -18,14 +18,7 @@ class Config:
     save_dir: Path = Path(__file__).parent.parent.parent / "output"
     norm_videos_dir: Path = save_dir / "normalized_videos"
 
-    runs_to_quantify: list[str] = field(
-        default_factory=lambda: [
-            "20251212 Runs",
-            "20251210 Runs",  # ...
-        ]
-    )
-
-    video_suffixes: list[str] = field(default_factory=lambda: [".wmv", ".mp4", ".avi"])
+    video_suffixes: tuple[str, str, str] = (".wmv", ".mp4", ".avi")
 
     time_of_interest_sec: int = 120
     num_secs_to_process: int = 300
@@ -33,19 +26,16 @@ class Config:
     bw_threshold_default: float = 45.0
     px_per_mm: float = (541 - 246) / 42.0
 
-    rewrite_if_exists: bool = False
+    rewrite_vids: bool = False
+    overwrite_norm_vid: bool = False
+    overwrite_plots: bool = False
+    overwrite_lead_lag_edge_data: bool = False
 
     magnet_distance_mm: dict[int, int] = field(
         default_factory=lambda: {0: 74, 1: 89, 2: 104, 3: 119, 4: 134, 5: 149, 6: 164}
     )
 
-    frames_per_real_sec: dict[str, float] = field(
-        default_factory=lambda: {
-            "2025-12-12": 3.7,
-            "2025-12-10": 3.7,  # ...
-        }
-    )
-    default_frames_per_real_sec: float = 3.7
+    frames_per_real_sec: float = 3.7
 
     empty_tube_video_path: Path = (
         Path(__file__).parent.parent.parent / "data" / "empty_tube.wmv"

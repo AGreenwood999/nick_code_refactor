@@ -36,27 +36,21 @@ class VideoData:
 
 
 def generate_grayscale_frames(
-    path_to_video: pathlib.Path,
-) -> Generator[tuple[int, np.ndarray], None, None]:
+    video_path: pathlib.Path,
+) -> Generator[np.ndarray, None, None]:
     """Generate frames from the video file.
     Yields the frame index and the frame itself as a numpy array.
     """
-    vd = VideoData.from_path(path_to_video)
-    for i in range(vd.nframes):
-        not_at_end, frame = vd.video.read()
+    vid_cap = cv2.VideoCapture(video_path)
+    while True:
+        not_at_end, frame = vid_cap.read()
 
         if frame is None:
-            logger.debug(
-                f"Unable to convert frame {i} of {vd.nframes} of video {vd.video_path} to grayscale."
-            )
+            logger.debug(f"Unable to convert frame of video {video_path} to grayscale.")
 
         if frame is not None and not_at_end:
-            yield i, np.asarray(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+            yield np.asarray(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
         else:
-            logger.debug(
-                f"Converted {i - 1} frames of {vd.nframes} for video {vd.video_path} to grayscale"
-            )
             break
 
-    # Release the video object
-    vd.video.release()
+    vid_cap.release()
