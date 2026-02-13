@@ -2,10 +2,14 @@
 File and path utilities for particle analysis.
 """
 
+import matplotlib.pyplot as plt
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+import cv2
+from cv2.typing import MatLike, Size
 import pandas as pd
+import numpy as np
 
 from nmr_particle_motion.config import Config
 
@@ -38,6 +42,7 @@ class VideoContext:
     path: Path
     norm_path: Path
     details: RunDetails
+    rotation_matrix: MatLike
 
 
 def get_video_details_from_path(path: Path) -> RunDetails:
@@ -48,6 +53,59 @@ def get_video_details_from_path(path: Path) -> RunDetails:
     all_run_details = pd.read_csv(csv_path, header=0)
     all_run_details.set_index("name", inplace=True)
     return RunDetails.from_dict(all_run_details.loc[path.name].to_dict(), path.stem)
+
+
+@dataclass(frozen=True)
+class RotationDetectionConfig:
+    line_scan_columns: list[int] = field(default_factory=lambda: [299, 999])
+    thresholding_low: int = 50
+    thresholding_type: int = cv2.THRESH_BINARY
+    gaussian_ksize: tuple[int, int] = (5, 5)
+    gaussian_sigma: int = 0
+    sobel_ksize: int = 1
+
+
+def get_vertical_bounds(mask: MatLike, x: int) -> tuple[np.int_, np.int_]:
+    sobel = cv2.Sobel(mask, cv2.CV_32F, 0, 1, ksize=1)
+
+    return np.argmin(sobel[:, x]), np.argmax(sobel[:, x])
+
+
+def get_rotation_matrix(
+    video_path: Path,
+    config: RotationDetectionConfig = RotationDetectionConfig(),
+) -> MatLike:
+    # TODO: This need a lot to be future-proof
+    ret, img = cv2.VideoCapture(video_path).read()
+    if not ret:
+        raise ValueError("Unable to get first frame of video")
+
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray_blur_img = cv2.GaussianBlur(
+        gray_img, config.gaussian_ksize, config.gaussian_sigma
+    )
+    _, mask = cv2.threshold(
+        gray_blur_img,
+        config.thresholding_low,
+        255,
+        cv2.THRESH_BINARY,
+    )
+    sobel = cv2.Sobel(mask, cv2.CV_32F, 0, 1, ksize=config.sobel_ksize)
+    xs = config.line_scan_columns
+    bounds = np.asarray(
+        [[x, np.argmin(sobel[:, x]), x, np.argmax(sobel[:, x])] for x in xs]
+    ).reshape((2 * len(xs), 2))
+    A = np.vstack([bounds[:, 0], np.ones((2 * len(xs)))]).T
+    m = np.linalg.lstsq(bounds[:, 0], bounds[:, 1])
+    print(m)
+    exit(0)
+    y = [np.argmax(sobel[:, xs[0]]), np.argmax(sobel[:, xs[1]])]
+    slope = (y[1] - y[0]) / (xs[1] - xs[0])
+    angle = np.rad2deg(np.arctan(slope))
+    h, w = img.shape[:2]
+    center = (w / 2, h / 2)
+
+    return cv2.getRotationMatrix2D(center, angle, 1)
 
 
 def get_all_video_contexts_from_directory(
@@ -68,6 +126,7 @@ def get_all_video_contexts_from_directory(
                     video_path.expanduser().resolve(),
                     norm_video_path.expanduser().resolve(),
                     get_video_details_from_path(video_path),
+                    get_rotation_matrix(video_path),
                 )
             )
 

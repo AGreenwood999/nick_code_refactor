@@ -1,9 +1,10 @@
 """Quantify bead mixing in a video."""
 
 import logging
-import pathlib
+from pathlib import Path
 from typing import Annotated
 
+import cv2
 import numpy as np
 import pandas as pd
 import typer
@@ -240,15 +241,15 @@ APP = typer.Typer()
 @APP.command()
 def main(
     videos_path: Annotated[
-        pathlib.Path,
+        Path,
         typer.Argument(help="Path to directory with videos to process."),
     ],
     config_path: Annotated[
-        pathlib.Path,
+        Path,
         typer.Argument(
             help="Path to TOML config containing default options and configuration for project"
         ),
-    ] = pathlib.Path(__file__).parent.parent.parent / "config.toml",
+    ] = Path(__file__).parent.parent.parent / "config.toml",
     compare: Annotated[
         bool,
         typer.Option(
@@ -259,7 +260,7 @@ def main(
         bool,
         typer.Option(help="Output debug information"),
     ] = False,
-    log_file: Annotated[pathlib.Path, typer.Argument(help="File to stream logs into")]
+    log_file: Annotated[Path, typer.Argument(help="File to stream logs into")]
     | None = None,
 ) -> None:
     """
@@ -298,6 +299,28 @@ def main(
 
     if compare:
         plot_all_side_by_side_coated_vs_uncoated(contexts, config)
+
+
+@APP.command()
+def testing(videos_dir: Path):
+    config: Config = Config.from_toml(Path("config.toml"))
+    contexts = get_all_video_contexts_from_directory(videos_dir, config)
+
+    ctx = contexts[0]
+
+    vid_cap = cv2.VideoCapture(ctx.path)
+    ret, img = vid_cap.read()
+    vid_cap.release()
+
+    if not ret:
+        raise ValueError("Couldn't get frame")
+
+    fig, axs = plt.subplots(1, 1, sharex=True, sharey=True)
+
+    axs.imshow(img)
+    axs.imshow(cv2.warpAffine(img, ctx.rotation_matrix, img.shape[::-1]))
+
+    plt.show()
 
 
 if __name__ == "__main__":

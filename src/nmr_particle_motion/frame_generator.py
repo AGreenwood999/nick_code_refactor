@@ -23,16 +23,16 @@ class VideoData:
     nframes: int
     fps: float
 
-    @classmethod
-    def from_path(cls, video_path: pathlib.Path) -> "VideoData":
-        """Create VideoData from a video file path.
-        The video is opened and metadata is extracted.
-        The video object is not released here; it should be released by the caller.
-        """
-        video = cv2.VideoCapture(video_path.as_posix())
-        nframes = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = video.get(cv2.CAP_PROP_FPS)
-        return cls(video=video, video_path=video_path, nframes=nframes, fps=fps)
+
+def get_video_data_from_path(path: pathlib.Path) -> VideoData:
+    """Create VideoData from a video file path.
+    The video is opened and metadata is extracted.
+    The video object is not released here; it should be released by the caller.
+    """
+    video = cv2.VideoCapture(path.as_posix())
+    nframes = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = video.get(cv2.CAP_PROP_FPS)
+    return VideoData(video=video, video_path=path, nframes=nframes, fps=fps)
 
 
 def generate_grayscale_frames(

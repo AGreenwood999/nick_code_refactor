@@ -14,6 +14,7 @@ from nmr_particle_motion.file_names_and_paths import (
 from nmr_particle_motion.frame_generator import (
     VideoData,
     generate_grayscale_frames,
+    get_video_data_from_path,
 )
 from nmr_particle_motion.shapeglobals import ShapeGlobals
 from nmr_particle_motion.video_writer import VideoWriter
@@ -135,7 +136,7 @@ class VideoNormalizer:
     def get_null_frame(config: Config) -> np.ndarray:
         """Get the null frame (empty tube) for normalization."""
         null_vpath = config.empty_tube_video_path
-        vd = VideoData.from_path(null_vpath)
+        vd = get_video_data_from_path(null_vpath)
         vd.video.release()  # Release immediately since we only need metadata here.
         frames_to_capture = np.linspace(
             0, vd.nframes - 1, num=min(50, vd.nframes), dtype=int
