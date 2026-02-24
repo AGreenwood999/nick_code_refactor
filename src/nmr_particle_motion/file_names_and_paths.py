@@ -3,17 +3,15 @@ File and path utilities for particle analysis.
 """
 
 import matplotlib.pyplot as plt
-from pathlib import Path
+import logging
+import polars as pl
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
-from cv2.typing import MatLike, Size
-import pandas as pd
 import numpy as np
-
-from nmr_particle_motion.config import Config
-
-import logging
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import find_peaks
 
 logger = logging.getLogger("nmr_particle_motion")
 
@@ -42,7 +40,8 @@ class VideoContext:
     path: Path
     norm_path: Path
     details: RunDetails
-    rotation_matrix: MatLike
+    rotation_matrix: np.ndarray
+    normalization_theshold: int
 
 
 def get_video_details_from_path(path: Path) -> RunDetails:
@@ -50,156 +49,192 @@ def get_video_details_from_path(path: Path) -> RunDetails:
     if not csv_path.is_file():
         raise RuntimeError(f"Run details CSV not found at {csv_path}")
 
-    all_run_details = pd.read_csv(csv_path, header=0)
-    all_run_details.set_index("name", inplace=True)
-    return RunDetails.from_dict(all_run_details.loc[path.name].to_dict(), path.stem)
+    all_run_details = pl.read_csv(csv_path)
+    return RunDetails.from_dict(
+        all_run_details.filter(pl.col("name") == path.name).to_dict(), path.stem
+    )
 
 
-@dataclass(frozen=True)
-class RotationDetectionConfig:
-    line_scan_columns: list[int] = field(default_factory=lambda: [299, 999])
-    thresholding_low: int = 50
-    thresholding_type: int = cv2.THRESH_BINARY
-    gaussian_ksize: tuple[int, int] = (5, 5)
-    gaussian_sigma: int = 0
-    sobel_ksize: int = 1
+def get_first_frame(vid_path: Path, gray: bool = True):
+    vid_cap = cv2.VideoCapture(vid_path)
+    ret, img = vid_cap.read()
+    vid_cap.release()
 
-
-def get_vertical_bounds(mask: MatLike, x: int) -> tuple[np.int_, np.int_]:
-    sobel = cv2.Sobel(mask, cv2.CV_32F, 0, 1, ksize=1)
-
-    return np.argmin(sobel[:, x]), np.argmax(sobel[:, x])
-
-
-def get_rotation_matrix(
-    video_path: Path,
-    config: RotationDetectionConfig = RotationDetectionConfig(),
-) -> MatLike:
-    # TODO: This need a lot to be future-proof
-    ret, img = cv2.VideoCapture(video_path).read()
     if not ret:
-        raise ValueError("Unable to get first frame of video")
+        raise RuntimeError(f"Failed to get first frame of video {vid_path.stem}")
 
-    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray_blur_img = cv2.GaussianBlur(
-        gray_img, config.gaussian_ksize, config.gaussian_sigma
+    if gray:
+        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        return img
+
+
+def get_null_frame(ctx: VideoContext) -> np.ndarray:
+    null_frame = get_first_frame(ctx.path, gray=True)
+    return cv2.warpAffine(null_frame, ctx.rotation_matrix, null_frame.shape[::-1])
+
+
+def _get_tube_lines_backup(canny: np.ndarray, roi_left: int, roi_right: int):
+    p1_where = np.argwhere(canny[:, roi_left]).flatten()
+    p2_where = np.argwhere(canny[:, roi_right]).flatten()
+
+    if len(p1_where) != 4 or len(p2_where) != 4:
+        return np.array([])
+
+    lines = np.empty((2, 1, 4), dtype=np.int_)
+    lines[0, 0, :] = [roi_left, p1_where[1], roi_right, p2_where[1]]
+    lines[1, 0, :] = [roi_left, p1_where[2], roi_right, p2_where[2]]
+    return lines
+
+
+def get_tube_lines(
+    img: np.ndarray,
+    *,
+    roi_left=200,
+    roi_right=1000,
+    min_line_length=100,
+    max_line_gap=50,
+    hough_threshold=50,
+    canny_low=100,
+    canny_high=200,
+) -> np.ndarray:
+    blur_img = cv2.GaussianBlur(img, (5, 5), 0)
+    canny = cv2.Canny(blur_img, canny_low, canny_high)
+    roi_top = np.argwhere(canny[:, roi_left])[0][0] + 20
+    roi_bottom = np.argwhere(canny[:, roi_right])[-1][0] - 20
+
+    lines = cv2.HoughLinesP(
+        canny[roi_top:roi_bottom, roi_left:roi_right],
+        0.5,
+        np.pi / 360,
+        hough_threshold,
+        minLineLength=min_line_length,
+        maxLineGap=max_line_gap,
     )
-    _, mask = cv2.threshold(
-        gray_blur_img,
-        config.thresholding_low,
-        255,
-        cv2.THRESH_BINARY,
+
+    if lines is None:
+        print("HAD TO DO BACKUP")
+        return _get_tube_lines_backup(canny, roi_left, roi_right)
+
+    for i in range(len(lines)):
+        lines[i, 0, 0] += roi_left
+        lines[i, 0, 1] += roi_top
+        lines[i, 0, 2] += roi_left
+        lines[i, 0, 3] += roi_top
+
+    return lines
+
+
+def get_left_boundary(
+    img: np.ndarray,
+) -> int:
+    sobel = cv2.Sobel(img, cv2.CV_32F, 1, 0)
+    abs_sobel_mean = np.mean(np.absolute(sobel), axis=0)
+    abs_sobel_mean_smooth = gaussian_filter1d(abs_sobel_mean, sigma=1.5)
+    peak, _ = find_peaks(
+        abs_sobel_mean_smooth,
+        prominence=50,
+        distance=400,
     )
-    sobel = cv2.Sobel(mask, cv2.CV_32F, 0, 1, ksize=config.sobel_ksize)
-    xs = config.line_scan_columns
-    bounds = np.asarray(
-        [[x, np.argmin(sobel[:, x]), x, np.argmax(sobel[:, x])] for x in xs]
-    ).reshape((2 * len(xs), 2))
-    A = np.vstack([bounds[:, 0], np.ones((2 * len(xs)))]).T
-    m = np.linalg.lstsq(bounds[:, 0], bounds[:, 1])
-    print(m)
-    exit(0)
-    y = [np.argmax(sobel[:, xs[0]]), np.argmax(sobel[:, xs[1]])]
-    slope = (y[1] - y[0]) / (xs[1] - xs[0])
-    angle = np.rad2deg(np.arctan(slope))
-    h, w = img.shape[:2]
+    if len(peak) == 0:
+        raise RuntimeError("Unable to find left edge of tube.")
+
+    return peak[0]
+
+
+def get_vertical_boundaries(
+    img: np.ndarray, *, roi_left: int = 199, roi_right: int = 1000
+) -> np.ndarray:
+    sobel = cv2.Sobel(img, cv2.CV_32F, 0, 1)[:, roi_left:roi_right]
+    abs_sobel_mean = np.mean(np.absolute(sobel), axis=1)
+    abs_sobel_mean_smooth = gaussian_filter1d(abs_sobel_mean, sigma=1.5)
+    peaks, _ = find_peaks(
+        abs_sobel_mean_smooth,
+        prominence=20,
+        distance=20,  # enforce separation in pixels
+    )
+
+    if len(peaks) != 4:
+        raise RuntimeError(
+            "Failed to find 4 expected boundaries: bottom and top of fixture, bottom and top of tube."
+        )
+
+    return np.asarray(peaks)
+
+
+def get_analysis_boundaries(
+    ctx: VideoContext,
+    *,
+    test_roi_left: int = 199,
+    test_roi_right: int = 1000,
+    margin: int = 5,
+) -> tuple[int, int, int]:
+    img = get_null_frame(ctx)
+    _, top, bottom, _ = get_vertical_boundaries(
+        img, roi_left=test_roi_left, roi_right=test_roi_right
+    )
+    left = get_left_boundary(img[top:bottom, :])
+
+    return top + margin, bottom - margin, left + margin
+
+
+def get_rotation_matrix_to_align_tube(
+    vid_path: Path,
+    *,
+    roi_left=200,
+    roi_right=1000,
+    min_line_length=500,
+    max_line_gap=100,
+    hough_threshold=50,
+    canny_low=100,
+    canny_high=200,
+) -> np.ndarray:
+    img = get_first_frame(vid_path, gray=True)
+    lines = get_tube_lines(
+        img,
+        roi_left=roi_left,
+        roi_right=roi_right,
+        min_line_length=min_line_length,
+        max_line_gap=max_line_gap,
+        hough_threshold=hough_threshold,
+        canny_low=canny_low,
+        canny_high=canny_high,
+    )
+
+    if lines.size == 0:
+        raise RuntimeError("Failed to straighten tube")
+
+    fits = np.empty((len(lines),), dtype=np.float32)
+    if lines is not None:
+        for i, line in enumerate(lines):
+            x1, y1, x2, y2 = line[0]
+            fits[i] = np.polyfit([x1, x2], [y1, y2], 1)[0]
+
+    h, w = img.shape
     center = (w / 2, h / 2)
+    angle = np.rad2deg(np.arctan(np.mean(fits)))
 
     return cv2.getRotationMatrix2D(center, angle, 1)
 
 
-def get_all_video_contexts_from_directory(
-    videos_dir: Path, config: Config
-) -> list[VideoContext]:
+def get_all_video_contexts_from_directory(videos_dir: Path) -> list[VideoContext]:
     contexts = []
-    for suffix in config.video_suffixes:
-        for video_path in videos_dir.glob(f"*{suffix}", case_sensitive=False):
-            if not video_path.is_file() or video_path.stem.endswith("_normalized"):
-                continue
+    for video_path in videos_dir.glob("*.wmv", case_sensitive=False):
+        if not video_path.is_file() or video_path.stem.endswith("_normalized"):
+            continue
 
-            norm_video_path = video_path.with_name(
-                f"{video_path.stem}_normalized{video_path.suffix}"
-            )
+        norm_video_path = video_path.with_name(
+            f"{video_path.stem}_normalized{video_path.suffix}"
+        )
 
-            contexts.append(
-                VideoContext(
-                    video_path.expanduser().resolve(),
-                    norm_video_path.expanduser().resolve(),
-                    get_video_details_from_path(video_path),
-                    get_rotation_matrix(video_path),
-                )
+        contexts.append(
+            VideoContext(
+                video_path.expanduser().resolve(),
+                norm_video_path.expanduser().resolve(),
+                get_video_details_from_path(video_path),
+                get_rotation_matrix_to_align_tube(video_path),
+                -50,
             )
+        )
 
     return contexts
-
-
-def get_le_lage_fpath(ctx: VideoContext, config: Config) -> Path:
-    """Get the path to the quantifications CSV file.
-    This is used to store the quantification results.
-    """
-    p = config.save_dir / Path("leading_lagging_edges")
-    p.mkdir(parents=True, exist_ok=True)
-    return p / f"{ctx.details.lot}-{ctx.details.vial_number}_le_lage.csv"
-
-
-def get_height_over_time_fpath(ctx: VideoContext, config: Config) -> Path:
-    """Get the path to the height over time CSV file.
-    This is used to store the height over time results.
-    """
-    p = config.save_dir / Path("height_over_time")
-    p.mkdir(parents=True, exist_ok=True)
-    return (
-        p / f"{ctx.details.lot}-{ctx.details.vial_number}_le_lage_height_over_time.csv"
-    )
-
-
-def get_full_video_distributions_fpaths(
-    ctx: VideoContext, config: Config
-) -> tuple[Path, Path]:
-    """Get the path to the full video distributions CSV file
-    and corresponding distribution plot image.
-    """
-    p = config.save_dir / Path("full_video_distributions")
-    p.mkdir(parents=True, exist_ok=True)
-    return (
-        p / f"{ctx.details.lot}-{ctx.details.vial_number}_dist_over_time.csv",
-        p / f"{ctx.details.lot}-{ctx.details.vial_number}_distribution.png",
-    )
-
-
-def get_dist_at_time_plot_fpath(
-    ctx: VideoContext, config: Config, time_sec: int
-) -> Path:
-    """Get the path to the time-of-interest CSV file
-    and corresponding distribution plot image.
-    """
-    p = config.save_dir / Path(f"{int(time_sec)}s_distributions")
-    p.mkdir(parents=True, exist_ok=True)
-    if ctx.details.lot == "Unknown lot" or ctx.details.vial_number == -1:
-        logger.warning(
-            f"Unable to parse lot or vial number from file {ctx.details.name}. Defaulting to filename"
-        )
-        return p / f"{ctx.details.lot}-{ctx.details.vial_number}_{int(time_sec)}s.png"
-    else:
-        return p / f"{ctx.details.lot}-{ctx.details.vial_number}_{int(time_sec)}s.png"
-
-
-def get_height_by_dist_at_time_fpath(
-    config: Config, substance, mass, rpm, time_sec: int
-) -> Path:
-    """Get the path to the time-of-interest CSV file
-    and corresponding distribution plot image.
-    """
-    p = config.save_dir / Path(
-        f"{config.time_of_interest_sec}s_height_by_distance_from_magnet"
-    )
-    p.mkdir(parents=True, exist_ok=True)
-    return p / f"{substance}_{mass}_{rpm}_leading_edge_at_{time_sec}_seconds.png"
-
-
-def get_coated_vs_uncoated_plot_path(config: Config, substance, mass, rpm, distance):
-    p = config.save_dir / "coated_vs_uncoated_side_by_side"
-    p.mkdir(parents=True, exist_ok=True)
-    return (
-        p / f"{substance}_{mass}_{rpm}_d{distance}_coated_vs_uncoated_side_by_side.png"
-    )
